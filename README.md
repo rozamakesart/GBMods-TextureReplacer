@@ -64,7 +64,9 @@ A persistent `MonoBehaviour` survives scene loads via `DontDestroyOnLoad` and pr
 - [BepInEx 6 (IL2CPP)](https://github.com/BepInEx/BepInEx)
 - [HarmonyX](https://github.com/BepInEx/HarmonyX)
 - [Il2CppInterop](https://github.com/BepInEx/Il2CppInterop)
-- [SixLabors.ImageSharp](https://github.com/SixLabors/ImageSharp)
+- [SixLabors.ImageSharp](https://github.com/SixLabors/ImageSharp) 
+
+This project uses Six Labors ImageSharp, licensed under the Apache License 2.0.
 
 ---
 
