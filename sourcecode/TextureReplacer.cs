@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Collections.Generic;
 using BepInEx;
@@ -20,24 +20,41 @@ using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using ISImage = SixLabors.ImageSharp.Image;
 
-namespace TextureReplacer
+namespace TextureReplacement
 {
-    [BepInPlugin("com.yourname.TextureReplacer", "Texture Replacement", "1.6.0")]
-    public class TextureReplacerPlugin : BasePlugin
+    [BepInPlugin("com.yourname.texturereplacement", "Texture Replacement", "1.6.0")]
+    public class TextureReplacementPlugin : BasePlugin
     {
         internal static new ManualLogSource Log;
         internal static Harmony Harmony;
 
+        /// <summary>
+        /// Whether verbose swap/load logging is active.
+        /// Controlled by BepInEx config. Errors always log regardless.
+        /// </summary>
+        public static bool LoggingEnabled { get; private set; }
+
         public override void Load()
         {
             Log = base.Log;
+
+            // Config
+            var cfgLogging = Config.Bind(
+                "General",
+                "EnableLogging",
+                false,
+                "Enable verbose logging of texture replacements and swaps.\n" +
+                "Errors (e.g. failed texture loads) are always logged regardless of this setting.\n" +
+                "Default: false"
+            );
+            LoggingEnabled = cfgLogging.Value;
 
             // Register our MonoBehaviour type with IL2CPP
             try { ClassInjector.RegisterTypeInIl2Cpp<TextureScanner>(); }
             catch { Log.LogWarning("TextureScanner already registered"); }
 
             // Initialize Harmony and apply all patches
-            Harmony = new Harmony("com.yourname.TextureReplacer");
+            Harmony = new Harmony("com.yourname.texturereplacement");
 
             // Asset loading interception
             Harmony.PatchAll(typeof(AssetBundlePatches));
@@ -72,7 +89,7 @@ namespace TextureReplacer
 
         private static void AddUnityComponent<T>() where T : MonoBehaviour
         {
-            var go = new GameObject("TextureReplacerScanner");
+            var go = new GameObject("TextureReplacementScanner");
             Object.DontDestroyOnLoad(go);
             go.AddComponent<T>();
         }
@@ -89,7 +106,8 @@ namespace TextureReplacer
         {
             if (Input.GetKeyDown(KeyCode.F5))
             {
-                TextureReplacerPlugin.Log.LogInfo("[HOTKEY] F5 Manual Refresh.");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo("[HOTKEY] F5 Manual Refresh.");
                 PerformGlobalSwap();
             }
         }
@@ -105,7 +123,8 @@ namespace TextureReplacer
             int swapCount = 0;
             var allRenderers = GameObject.FindObjectsOfType<Renderer>(true);
 
-            TextureReplacerPlugin.Log.LogInfo($"[SWAP] Scanning {allRenderers.Length} renderers...");
+            if (TextureReplacementPlugin.LoggingEnabled)
+                TextureReplacementPlugin.Log.LogInfo($"[SWAP] Scanning {allRenderers.Length} renderers...");
 
             foreach (var renderer in allRenderers)
             {
@@ -138,10 +157,13 @@ namespace TextureReplacer
                 }
             }
 
-            if (swapCount > 0)
-                TextureReplacerPlugin.Log.LogInfo($"[SWAP] Applied {swapCount} textures.");
-            else
-                TextureReplacerPlugin.Log.LogInfo($"[SWAP] No textures needed replacement.");
+            if (TextureReplacementPlugin.LoggingEnabled)
+            {
+                if (swapCount > 0)
+                    TextureReplacementPlugin.Log.LogInfo($"[SWAP] Applied {swapCount} textures.");
+                else
+                    TextureReplacementPlugin.Log.LogInfo($"[SWAP] No textures needed replacement.");
+            }
         }
     }
 
@@ -172,12 +194,14 @@ namespace TextureReplacer
             if (!Directory.Exists(folder))
             {
                 Directory.CreateDirectory(folder);
-                TextureReplacerPlugin.Log.LogInfo($"Created texture folder: {folder}");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"Created texture folder: {folder}");
                 return;
             }
 
             var pngFiles = Directory.GetFiles(folder, "*.png");
-            TextureReplacerPlugin.Log.LogInfo($"Loading {pngFiles.Length} textures from {folder}");
+            if (TextureReplacementPlugin.LoggingEnabled)
+                TextureReplacementPlugin.Log.LogInfo($"Loading {pngFiles.Length} textures from {folder}");
 
             foreach (string file in pngFiles)
             {
@@ -188,16 +212,19 @@ namespace TextureReplacer
                     if (tex != null)
                     {
                         TextureRegistry.Register(assetName, tex);
-                        TextureReplacerPlugin.Log.LogInfo($"Registered: {assetName}");
+                        if (TextureReplacementPlugin.LoggingEnabled)
+                            TextureReplacementPlugin.Log.LogInfo($"Registered: {assetName}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    TextureReplacerPlugin.Log.LogError($"Failed to load {Path.GetFileName(file)}: {ex.Message}");
+                    // Errors always log regardless of the logging setting
+                    TextureReplacementPlugin.Log.LogError($"Failed to load {Path.GetFileName(file)}: {ex.Message}");
                 }
             }
 
-            TextureReplacerPlugin.Log.LogInfo($"Loaded {TextureRegistry.Count} replacement textures");
+            if (TextureReplacementPlugin.LoggingEnabled)
+                TextureReplacementPlugin.Log.LogInfo($"Loaded {TextureRegistry.Count} replacement textures");
         }
 
         private static Texture2D LoadWithImageSharp(string path, string name)
@@ -256,7 +283,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 __result = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[ASSETBUNDLE] Replaced {normName}");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[ASSETBUNDLE] Replaced {normName}");
                 return false;
             }
 
@@ -281,7 +309,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 __result = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[RESOURCES] Replaced {normName}");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[RESOURCES] Replaced {normName}");
                 return false;
             }
 
@@ -304,7 +333,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 value = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (slot: {name})");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (slot: {name})");
             }
         }
 
@@ -317,7 +347,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 value = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (propertyID: {nameID})");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (propertyID: {nameID})");
             }
         }
 
@@ -330,7 +361,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 value = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[MATERIAL.MAINTEX] Replaced {normName} in {__instance.name}");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.MAINTEX] Replaced {normName} in {__instance.name}");
             }
         }
     }
@@ -350,7 +382,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 value = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (slot: {name})");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (slot: {name})");
             }
         }
 
@@ -363,7 +396,8 @@ namespace TextureReplacer
             if (TextureRegistry.TryGet(normName, out var replacement))
             {
                 value = replacement;
-                TextureReplacerPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (propertyID: {nameID})");
+                if (TextureReplacementPlugin.LoggingEnabled)
+                    TextureReplacementPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (propertyID: {nameID})");
             }
         }
     }
@@ -378,7 +412,8 @@ namespace TextureReplacer
         [HarmonyPatch(typeof(BokuMono.FadeManager), "FadeOutAsync")]
         private static void FadeOutAsyncPostfix()
         {
-            TextureReplacerPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
+            if (TextureReplacementPlugin.LoggingEnabled)
+                TextureReplacementPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
             var scanner = Object.FindObjectOfType<TextureScanner>();
             if (scanner != null)
                 scanner.StartCoroutine(scanner.DelayedSwap(0.1f));
@@ -388,7 +423,8 @@ namespace TextureReplacer
         [HarmonyPatch(typeof(BokuMono.FadeManager), "FadeOut")]
         private static void FadeOutPostfix()
         {
-            TextureReplacerPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
+            if (TextureReplacementPlugin.LoggingEnabled)
+                TextureReplacementPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
             var scanner = Object.FindObjectOfType<TextureScanner>();
             if (scanner != null)
                 scanner.StartCoroutine(scanner.DelayedSwap(0.1f));
@@ -441,7 +477,8 @@ namespace TextureReplacer
                         if (TextureRegistry.TryGet(normName, out var replacement))
                         {
                             mat.SetTexture(slot, replacement);
-                            TextureReplacerPlugin.Log.LogInfo($"[PREFAB] Injected {normName} into {prefab.name} (slot: {slot})");
+                            if (TextureReplacementPlugin.LoggingEnabled)
+                                TextureReplacementPlugin.Log.LogInfo($"[PREFAB] Injected {normName} into {prefab.name} (slot: {slot})");
                         }
                     }
                 }
