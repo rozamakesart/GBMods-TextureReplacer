@@ -20,9 +20,9 @@ using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using ISImage = SixLabors.ImageSharp.Image;
 
-namespace TextureReplacement
+namespace TextureReplacer
 {
-    [BepInPlugin("com.yourname.texturereplacement", "Texture Replacement", "1.6.0")]
+    [BepInPlugin("TextureReplacer", "Texture Replacer", "1.6.0")]
     public class TextureReplacementPlugin : BasePlugin
     {
         internal static new ManualLogSource Log;
@@ -119,7 +119,7 @@ namespace TextureReplacement
             catch { Log.LogWarning("TextureScanner already registered"); }
 
             // Initialize Harmony and apply all patches
-            Harmony = new Harmony("com.yourname.texturereplacement");
+            Harmony = new Harmony("TextureReplacer");
 
             // Asset loading interception
             if (EnableAssetBundlePatches)
@@ -144,7 +144,7 @@ namespace TextureReplacement
             // Load textures on first scene load
             SceneManager.add_sceneLoaded((UnityAction<Scene, LoadSceneMode>)OnFirstSceneLoaded);
 
-            Log.LogInfo("Texture Replacement plugin loaded.");
+            Log.LogInfo("Texture Replacer plugin loaded.");
 
             // Add the persistent scanner/hotkey handler
             AddUnityComponent<TextureScanner>();
@@ -233,7 +233,7 @@ namespace TextureReplacement
                 if (swapCount > 0)
                     TextureReplacementPlugin.Log.LogInfo($"[SWAP] Applied {swapCount} textures.");
                 else
-                    TextureReplacementPlugin.Log.LogInfo("[SWAP] No textures needed replacement.");
+                    TextureReplacementPlugin.Log.LogInfo($"[SWAP] No textures needed replacement.");
             }
         }
     }
