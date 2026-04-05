@@ -1,13 +1,11 @@
 # Texture Replacer
-A BepInEx plugin for Unity IL2CPP games that replaces in-game textures at runtime by intercepting the game's texture loading and rendering pipeline.
+A BepInEx plugin for Unity IL2CPP games (specifically Story of Seasons Grand Bazaar) that replaces in-game textures at runtime by intercepting the game's texture loading and rendering pipeline.
 
 ---
 
 ## How It Works
 
 The plugin reads `.png` files from a `TextureReplacer` folder, loads them as `Texture2D` objects, and registers them in a central registry keyed by filename (without extension). Whenever the game tries to use a texture with a matching name, the plugin swaps it out for the custom one.
-
-Because Unity games can load and assign textures in several different ways, the plugin hooks into multiple layers of the rendering pipeline to ensure nothing slips through.
 
 ---
 
@@ -30,28 +28,21 @@ Texture names are normalized before matching, so you don't need to worry about p
 - The suffix ` (Instance)` is removed if present
 
 So a texture the game refers to as `characters/skins/tex_chr_npc_M_000_o.png (Instance)` will match a file named `tex_chr_npc_M_000_o.png`.
+NOTE: This only works if the texture is indeed used 
 
 ---
 
 ## Interception Points
 
-The plugin hooks into the following parts of the Unity pipeline:
+The plugin hooks into the following function of the Unity Asset Pipeline:
 
-| Hook | What it covers |
-|---|---|
-| `AssetBundle.LoadAsset` | Textures loaded from asset bundles |
-| `Resources.Load` | Textures loaded from the Resources system |
-| `Material.SetTexture` (by name & ID) | Direct material texture assignments |
-| `Material.mainTexture` setter | Main texture property assignments |
-| `MaterialPropertyBlock.SetTexture` (by name & ID) | Per-renderer texture overrides that bypass material state |
-| `ResourceManager.LoadPrefab` | Game-specific hook; processes all renderers on a prefab after load |
-| `FadeManager.FadeOut / FadeOutAsync` | Game-specific hook; triggers a re-scan after scene transitions |
+`AssetBundleRequest.get_asset(string, Type)`
 
 ---
 
 ## Fallback Scanner
 
-A persistent `MonoBehaviour` survives scene loads via `DontDestroyOnLoad` and provides a manual fallback for anything that might load outside the patched methods.
+A persistent `MonoBehaviour` survives scene loads via `DontDestroyOnLoad` and provides a manual fallback for anything that might load outside the patched method. It has to be activated via config and should mostly be used for debugging purposes, since .get_asset() should be able to cover all bases.
 
 | Key | Action |
 |---|---|
@@ -61,10 +52,9 @@ A persistent `MonoBehaviour` survives scene loads via `DontDestroyOnLoad` and pr
 
 ## Dependencies
 
-- [BepInEx 6 (IL2CPP)](https://github.com/BepInEx/BepInEx)
-- [HarmonyX](https://github.com/BepInEx/HarmonyX)
-- [Il2CppInterop](https://github.com/BepInEx/Il2CppInterop)
-- [SixLabors.ImageSharp](https://github.com/SixLabors/ImageSharp) 
+- [BepInEx 6 (IL2CPP) & IL2CPPInterop Bleeding Edge version #738](https://builds.bepinex.dev/projects/bepinex_be)
+- [HarmonyX](https://github.com/BepInEx/HarmonyX) (not necessary to download)
+- [SixLabors.ImageSharp](https://github.com/SixLabors/ImageSharp) (library provided in release builds)
 
 This project uses Six Labors ImageSharp, licensed under the Apache License 2.0.
 
@@ -72,10 +62,10 @@ This project uses Six Labors ImageSharp, licensed under the Apache License 2.0.
 
 ## Notes
 
-- Textures loaded via ImageSharp are flipped vertically on load, since Unity's UV origin differs from most standard image formats.
+- Textures loaded via ImageSharp are flipped vertically on load, since Unity's UV origin differs from most standard image formats. This should not cause issues if you use the ingame textures though.
 - The registry holds strong `Object` references to all loaded textures to prevent Unity's garbage collector from unloading them.
-- This plugin is game-agnostic except for the `FadeManager` and `ResourceManager` hooks, which target `BokuMono` namespaced classes. Remove or replace those patches if targeting a different game.
-
+- This plugin should be game-agnostic, but has only been tested with Story of Seasons Grand Bazaar.
+   
 ---
 
 # Texture Diagnostics
@@ -87,7 +77,7 @@ A standalone BepInEx observer plugin for tracing how a specific texture moves th
 
 ## How It Works
 
-The plugin hooks into the same texture loading and assignment methods as the replacer, but only to log what is happening — it never modifies `ref` parameters or return values. Load method hooks (`AssetBundle`, `Resources`) use both a Prefix and Postfix so you can see both that a texture was requested *and* what was actually returned after all other patches (including the replacer) have run.
+The plugin hooks into the same texture loading and assignment methods as the replacer, but only to log what is happening — it never modifies `ref` parameters or return values. Load method hooks use both a Prefix and Postfix so you can see both that a texture was requested *and* what was actually returned after all other patches (including the replacer) have run.
 
 ---
 
@@ -156,9 +146,8 @@ Pressing `F7` walks every `Renderer` in the scene across the common texture slot
 
 ## Dependencies
 
-- [BepInEx 6 (IL2CPP)](https://github.com/BepInEx/BepInEx)
-- [HarmonyX](https://github.com/BepInEx/HarmonyX)
-- [Il2CppInterop](https://github.com/BepInEx/Il2CppInterop)
+- [BepInEx 6 (IL2CPP) & IL2CPPInterop Bleeding Edge version #738](https://builds.bepinex.dev/projects/bepinex_be)
+- [HarmonyX](https://github.com/BepInEx/HarmonyX) (not required to download)
 
 > Unlike the Texture Replacer, this plugin does **not** require ImageSharp.
 
