@@ -11,7 +11,7 @@ The plugin reads `.png` files from a `TextureReplacer` folder, loads them as `Te
 
 ## Installation
 
-1. Install [BepInEx](https://github.com/BepInEx/BepInEx) for your game.
+1. Install [BepInEx](https://github.com/BepInEx/BepInEx) for your game. For Grand Bazaar that's [Bleeding Edge version #738](https://builds.bepinex.dev/projects/bepinex_be)
 2. Drop `TextureReplacer.dll` into `BepInEx/plugins/`.
 3. Launch the game once to auto-create the `BepInEx/plugins/TextureReplacer/` folder.
 4. Place your replacement `.png` files into that folder.
