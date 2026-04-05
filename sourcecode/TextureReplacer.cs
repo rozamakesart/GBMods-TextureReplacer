@@ -4,9 +4,7 @@ using System.Collections.Generic;
 using BepInEx;
 using BepInEx.Unity.IL2CPP;
 using BepInEx.Logging;
-using BepInEx.Unity.IL2CPP.Utils;
 using HarmonyLib;
-using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using UnityEngine;
@@ -22,135 +20,89 @@ using ISImage = SixLabors.ImageSharp.Image;
 
 namespace TextureReplacer
 {
-    [BepInPlugin("TextureReplacer", "Texture Replacer", "1.6.0")]
+    // =========================================================
+    // Log level
+    // =========================================================
+
+    /// <summary>
+    /// Controls how much the plugin logs to the BepInEx console.
+    /// </summary>
+    public enum PluginLogLevel
+    {
+        /// <summary>Only errors are logged. Recommended for normal use.</summary>
+        None,
+
+        /// <summary>Logs texture registrations at startup and successful replacements at runtime.</summary>
+        Normal,
+
+        /// <summary>
+        /// Logs every registry lookup (hits and misses) and every asset intercepted by get_asset.
+        /// Very spammy — use only when a texture is not being replaced and you need to find out why.
+        /// </summary>
+        Diagnostic
+    }
+
+    // =========================================================
+    // Plugin entry point
+    // =========================================================
+
+    [BepInPlugin("TextureReplacer", "Texture Replacer", "1.7.0")]
     public class TextureReplacementPlugin : BasePlugin
     {
         internal static new ManualLogSource Log;
         internal static Harmony Harmony;
 
-        /// <summary>
-        /// Whether verbose swap/load logging is active.
-        /// Controlled by BepInEx config. Errors always log regardless.
-        /// </summary>
-        public static bool LoggingEnabled { get; private set; }
+        public static PluginLogLevel LogLevel { get; private set; }
 
-        /// <summary>
-        /// Replacement type toggles - controlled via config file
-        /// </summary>
-        public static bool EnableAssetBundlePatches { get; private set; }
-        public static bool EnableResourcePatches { get; private set; }
-        public static bool EnableMaterialPatches { get; private set; }
-        public static bool EnableMaterialPropertyBlockPatches { get; private set; }
-        public static bool EnableResourceManagerPatches { get; private set; }
-        public static bool EnableFadePatches { get; private set; }
+        // Convenience helpers used throughout the plugin
+        internal static bool IsNormal     => LogLevel >= PluginLogLevel.Normal;
+        internal static bool IsDiagnostic => LogLevel >= PluginLogLevel.Diagnostic;
 
         public override void Load()
         {
             Log = base.Log;
 
-            // Config - Logging
-            var cfgLogging = Config.Bind(
+            var cfgLogLevel = Config.Bind(
                 "General",
-                "EnableLogging",
+                "LogLevel",
+                PluginLogLevel.None,
+                "Controls how much the plugin logs.\n" +
+                "  None       - Only errors. Recommended for normal use.\n" +
+                "  Normal     - Logs texture registrations at startup and replacements at runtime.\n" +
+                "  Diagnostic - Logs every registry lookup and every intercepted asset.\n" +
+                "               Very spammy — only use when a texture is not being replaced.\n" +
+                "Default: None"
+            );
+            LogLevel = cfgLogLevel.Value;
+
+            var cfgScanner = Config.Bind(
+                "General",
+                "EnableF5Scanner",
                 false,
-                "Enable verbose logging of texture replacements and swaps.\n" +
-                "Errors (e.g. failed texture loads) are always logged regardless of this setting.\n" +
+                "Enable the F5 hotkey to manually re-scan all active renderers and apply replacements.\n" +
+                "Useful if a texture loads after the initial scene load and isn't caught by get_asset.\n" +
                 "Default: false"
             );
-            LoggingEnabled = cfgLogging.Value;
 
-            // Config - Replacement Type Toggles
-            var cfgAssetBundle = Config.Bind(
-                "ReplacementTypes",
-                "EnableAssetBundlePatches",
-                true,
-                "Enable texture replacement for AssetBundle.LoadAsset() calls.\n" +
-                "Default: true"
-            );
-            EnableAssetBundlePatches = cfgAssetBundle.Value;
-
-            var cfgResources = Config.Bind(
-                "ReplacementTypes",
-                "EnableResourcePatches",
-                true,
-                "Enable texture replacement for Resources.Load() calls.\n" +
-                "Default: true"
-            );
-            EnableResourcePatches = cfgResources.Value;
-
-            var cfgMaterial = Config.Bind(
-                "ReplacementTypes",
-                "EnableMaterialPatches",
-                true,
-                "Enable texture replacement for Material.SetTexture() calls.\n" +
-                "Default: true"
-            );
-            EnableMaterialPatches = cfgMaterial.Value;
-
-            var cfgMPB = Config.Bind(
-                "ReplacementTypes",
-                "EnableMaterialPropertyBlockPatches",
-                true,
-                "Enable texture replacement for MaterialPropertyBlock.SetTexture() calls.\n" +
-                "Default: true"
-            );
-            EnableMaterialPropertyBlockPatches = cfgMPB.Value;
-
-            var cfgResourceManager = Config.Bind(
-                "ReplacementTypes",
-                "EnableResourceManagerPatches",
-                true,
-                "Enable texture replacement for ResourceManager.LoadPrefab() callbacks.\n" +
-                "Default: true"
-            );
-            EnableResourceManagerPatches = cfgResourceManager.Value;
-
-            var cfgFade = Config.Bind(
-                "ReplacementTypes",
-                "EnableFadePatches",
-                true,
-                "Enable texture replacement on FadeManager events.\n" +
-                "Default: true"
-            );
-            EnableFadePatches = cfgFade.Value;
-
-            // Register our MonoBehaviour type with IL2CPP
-            try { ClassInjector.RegisterTypeInIl2Cpp<TextureScanner>(); }
-            catch { Log.LogWarning("TextureScanner already registered"); }
-
-            // Initialize Harmony and apply all patches
+            // Initialize Harmony and apply patches
             Harmony = new Harmony("TextureReplacer");
+            Harmony.PatchAll(typeof(GetAssetPatches));
 
-            // Asset loading interception
-            if (EnableAssetBundlePatches)
-                Harmony.PatchAll(typeof(AssetBundlePatches));
-            if (EnableResourcePatches)
-                Harmony.PatchAll(typeof(ResourcePatches));
-
-            // Material assignment interception
-            if (EnableMaterialPatches)
-                Harmony.PatchAll(typeof(MaterialPatches));
-
-            // MaterialPropertyBlock interception (catches per-renderer overrides)
-            if (EnableMaterialPropertyBlockPatches)
-                Harmony.PatchAll(typeof(MaterialPropertyBlockPatches));
-
-            // Game-specific hooks
-            if (EnableResourceManagerPatches)
-                Harmony.PatchAll(typeof(ResourceManagerPatches));
-            if (EnableFadePatches)
-                Harmony.PatchAll(typeof(FadePatches));
-
-            // Load textures on first scene load
+            // Load replacement textures on first scene load
             SceneManager.add_sceneLoaded((UnityAction<Scene, LoadSceneMode>)OnFirstSceneLoaded);
 
-            Log.LogInfo("Texture Replacer plugin loaded.");
+            // Only register and instantiate the scanner if the user has enabled it
+            if (cfgScanner.Value)
+            {
+                try { ClassInjector.RegisterTypeInIl2Cpp<TextureScanner>(); }
+                catch { Log.LogWarning("TextureScanner already registered"); }
+                CreatePersistentComponent<TextureScanner>();
+            }
 
-            // Add the persistent scanner/hotkey handler
-            AddUnityComponent<TextureScanner>();
+            Log.LogInfo("Texture Replacer plugin loaded.");
         }
 
-        private static bool _texturesLoaded = false;
+        private static bool _texturesLoaded;
         private static void OnFirstSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             if (_texturesLoaded) return;
@@ -158,7 +110,7 @@ namespace TextureReplacer
             TextureLoader.LoadAllReplacements();
         }
 
-        private static void AddUnityComponent<T>() where T : MonoBehaviour
+        private static void CreatePersistentComponent<T>() where T : MonoBehaviour
         {
             var go = new GameObject("TextureReplacementScanner");
             Object.DontDestroyOnLoad(go);
@@ -167,55 +119,36 @@ namespace TextureReplacer
     }
 
     // =========================================================
-    // The Scanner (Handles Hotkeys and Post-Load Fallback)
+    // Optional F5 scanner
     // =========================================================
+
     public class TextureScanner : MonoBehaviour
     {
         public TextureScanner(IntPtr ptr) : base(ptr) { }
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F5))
-            {
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo("[HOTKEY] F5 Manual Refresh.");
-                PerformGlobalSwap();
-            }
-        }
+            if (!Input.GetKeyDown(KeyCode.F5)) return;
 
-        public System.Collections.IEnumerator DelayedSwap(float delay)
-        {
-            yield return new WaitForSeconds(delay);
-            PerformGlobalSwap();
-        }
+            if (TextureReplacementPlugin.IsNormal)
+                TextureReplacementPlugin.Log.LogInfo("[SCANNER] F5 manual refresh triggered.");
 
-        public void PerformGlobalSwap()
-        {
             int swapCount = 0;
             var allRenderers = GameObject.FindObjectsOfType<Renderer>(true);
-
-            if (TextureReplacementPlugin.LoggingEnabled)
-                TextureReplacementPlugin.Log.LogInfo($"[SWAP] Scanning {allRenderers.Length} renderers...");
 
             foreach (var renderer in allRenderers)
             {
                 if (renderer == null) continue;
-
-                var mats = renderer.sharedMaterials;
-                foreach (var mat in mats)
+                foreach (var mat in renderer.sharedMaterials)
                 {
                     if (mat == null) continue;
-
-                    string[] slots = { "_MainTex", "_BaseMap", "_BaseColorMap", "_Albedo", "_DiffuseTexture", "_Texture", "_SkinTex" };
-                    foreach (var slot in slots)
+                    foreach (var slot in MaterialTextureUtils.Slots)
                     {
                         if (!mat.HasProperty(slot)) continue;
-
                         var tex = mat.GetTexture(slot);
                         if (tex == null) continue;
 
                         string normName = TextureNameUtil.Normalize(tex.name);
-
                         if (TextureRegistry.TryGet(normName, out var replacement))
                         {
                             if (tex.GetInstanceID() != replacement.GetInstanceID())
@@ -228,34 +161,107 @@ namespace TextureReplacer
                 }
             }
 
-            if (TextureReplacementPlugin.LoggingEnabled)
-            {
-                if (swapCount > 0)
-                    TextureReplacementPlugin.Log.LogInfo($"[SWAP] Applied {swapCount} textures.");
-                else
-                    TextureReplacementPlugin.Log.LogInfo($"[SWAP] No textures needed replacement.");
-            }
+            if (TextureReplacementPlugin.IsNormal)
+                TextureReplacementPlugin.Log.LogInfo(
+                    swapCount > 0
+                        ? $"[SCANNER] Applied {swapCount} replacement(s)."
+                        : "[SCANNER] No replacements needed.");
         }
     }
 
     // =========================================================
-    // Core Logic & Registry
+    // Shared material slot definitions and renderer scanning
     // =========================================================
+
+    internal static class MaterialTextureUtils
+    {
+        /// <summary>
+        /// All material texture slot names to check. Add new shader slots here.
+        /// </summary>
+        internal static readonly string[] Slots =
+        {
+            "_MainTex", "_BaseMap", "_BaseColorMap",
+            "_Albedo", "_DiffuseTexture", "_Texture", "_SkinTex"
+        };
+
+        /// <summary>
+        /// Scans all renderers on a GameObject and its children,
+        /// replacing any registered textures found in their materials.
+        /// Returns the number of replacements made.
+        /// </summary>
+        public static int ScanAndReplace(GameObject go, string logPrefix)
+        {
+            int count = 0;
+
+            foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null) continue;
+                foreach (var mat in renderer.sharedMaterials)
+                {
+                    if (mat == null) continue;
+                    foreach (var slot in Slots)
+                    {
+                        if (!mat.HasProperty(slot)) continue;
+                        var tex = mat.GetTexture(slot);
+                        if (tex == null) continue;
+
+                        string normName = TextureNameUtil.Normalize(tex.name);
+                        if (TextureRegistry.TryGet(normName, out var replacement))
+                        {
+                            mat.SetTexture(slot, replacement);
+                            count++;
+                            if (TextureReplacementPlugin.IsNormal)
+                                TextureReplacementPlugin.Log.LogInfo(
+                                    $"{logPrefix} Replaced '{normName}' in " +
+                                    $"'{go.name}/{renderer.name}' slot '{slot}'");
+                        }
+                    }
+                }
+            }
+
+            return count;
+        }
+    }
+
+    // =========================================================
+    // Texture registry
+    // =========================================================
+
     internal static class TextureRegistry
     {
-        private static readonly List<Object> _roots = new();
+        // HideAndDontSave on each texture already prevents Unity from unloading them,
+        // so no separate root list is needed.
         private static readonly Dictionary<string, Texture2D> _replacements = new();
 
         public static void Register(string name, Texture2D tex)
         {
             _replacements[name] = tex;
-            if (!_roots.Contains(tex)) _roots.Add(tex);
         }
 
-        public static bool TryGet(string name, out Texture2D tex) => _replacements.TryGetValue(name, out tex);
+        public static bool TryGet(string name, out Texture2D tex)
+        {
+            bool found = _replacements.TryGetValue(name, out tex);
+            if (TextureReplacementPlugin.IsDiagnostic)
+                TextureReplacementPlugin.Log.LogInfo(
+                    found
+                        ? $"[REGISTRY HIT]  '{name}'"
+                        : $"[REGISTRY MISS] '{name}'");
+            return found;
+        }
 
-        public static int Count => _replacements.Count;
+        public static void DumpAll()
+        {
+            TextureReplacementPlugin.Log.LogInfo(
+                $"[REGISTRY] {_replacements.Count} replacement(s) registered:");
+            foreach (var kvp in _replacements)
+                TextureReplacementPlugin.Log.LogInfo(
+                    $"  '{kvp.Key}' ({kvp.Value.width}x{kvp.Value.height})");
+        }
     }
+
+    // =========================================================
+    // Texture loader
+    // =========================================================
 
     internal static class TextureLoader
     {
@@ -265,14 +271,22 @@ namespace TextureReplacer
             if (!Directory.Exists(folder))
             {
                 Directory.CreateDirectory(folder);
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"Created texture folder: {folder}");
+                TextureReplacementPlugin.Log.LogWarning(
+                    $"[LOADER] Texture folder not found — created it at: {folder}\n" +
+                    "Place replacement PNGs here, named to match the in-game texture asset name.");
                 return;
             }
 
             var pngFiles = Directory.GetFiles(folder, "*.png");
-            if (TextureReplacementPlugin.LoggingEnabled)
-                TextureReplacementPlugin.Log.LogInfo($"Loading {pngFiles.Length} textures from {folder}");
+            TextureReplacementPlugin.Log.LogInfo(
+                $"[LOADER] Found {pngFiles.Length} PNG(s) in {folder}");
+
+            if (pngFiles.Length == 0)
+            {
+                TextureReplacementPlugin.Log.LogWarning(
+                    "[LOADER] No PNGs found — nothing will be replaced.");
+                return;
+            }
 
             foreach (string file in pngFiles)
             {
@@ -283,44 +297,47 @@ namespace TextureReplacer
                     if (tex != null)
                     {
                         TextureRegistry.Register(assetName, tex);
-                        if (TextureReplacementPlugin.LoggingEnabled)
-                            TextureReplacementPlugin.Log.LogInfo($"Registered: {assetName}");
+                        TextureReplacementPlugin.Log.LogInfo(
+                            $"[LOADER] Registered '{assetName}' ({tex.width}x{tex.height})");
+                    }
+                    else
+                    {
+                        TextureReplacementPlugin.Log.LogError(
+                            $"[LOADER] Failed to load '{assetName}' — loader returned null.");
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Errors always log regardless of the logging setting
-                    TextureReplacementPlugin.Log.LogError($"Failed to load {Path.GetFileName(file)}: {ex.Message}");
+                    TextureReplacementPlugin.Log.LogError(
+                        $"[LOADER] Exception loading '{Path.GetFileName(file)}': {ex.Message}");
                 }
             }
 
-            if (TextureReplacementPlugin.LoggingEnabled)
-                TextureReplacementPlugin.Log.LogInfo($"Loaded {TextureRegistry.Count} replacement textures");
+            if (TextureReplacementPlugin.IsNormal)
+                TextureRegistry.DumpAll();
         }
 
         private static Texture2D LoadWithImageSharp(string path, string name)
         {
-            using (Image<Rgba32> image = ISImage.Load<Rgba32>(path))
-            {
-                image.Mutate(x => x.Flip(FlipMode.Vertical));
-                byte[] pixelBytes = new byte[image.Width * image.Height * 4];
-                image.CopyPixelDataTo(pixelBytes);
+            using var image = ISImage.Load<Rgba32>(path);
+            image.Mutate(x => x.Flip(FlipMode.Vertical));
 
-                var tex = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false);
-                tex.name = name;
-                tex.hideFlags = HideFlags.HideAndDontSave;
+            byte[] pixelBytes = new byte[image.Width * image.Height * 4];
+            image.CopyPixelDataTo(pixelBytes);
 
-                var il2cppBytes = (Il2CppStructArray<byte>)pixelBytes;
-                tex.LoadRawTextureData(il2cppBytes);
-                tex.Apply(true, true);
-                return tex;
-            }
+            var tex = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false);
+            tex.name = name;
+            tex.hideFlags = HideFlags.HideAndDontSave;
+            tex.LoadRawTextureData((Il2CppStructArray<byte>)pixelBytes);
+            tex.Apply(true, true);
+            return tex;
         }
     }
 
     // =========================================================
     // Utility
     // =========================================================
+
     internal static class TextureNameUtil
     {
         public static string Normalize(string name)
@@ -338,243 +355,57 @@ namespace TextureReplacer
     }
 
     // =========================================================
-    // AssetBundle.LoadAsset Patches
+    // get_asset patch — intercepts all completed AssetBundleRequests
     // =========================================================
+
     [HarmonyPatch]
-    internal static class AssetBundlePatches
-    {
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadAsset), new[] { typeof(string), typeof(Il2CppSystem.Type) })]
-        private static bool LoadAssetPrefix(string name, Il2CppSystem.Type type, ref Object __result)
-        {
-            if (!TextureReplacementPlugin.EnableAssetBundlePatches)
-                return true;
-
-            if (type != Il2CppType.Of<Texture2D>()) return true;
-
-            string normName = TextureNameUtil.Normalize(name);
-
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                __result = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[ASSETBUNDLE] Replaced {normName}");
-                return false;
-            }
-
-            return true;
-        }
-    }
-
-    // =========================================================
-    // Resources.Load Patches
-    // =========================================================
-    [HarmonyPatch]
-    internal static class ResourcePatches
-    {
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(Resources), nameof(Resources.Load), new[] { typeof(string), typeof(Il2CppSystem.Type) })]
-        private static bool ResourcesLoadPrefix(string path, Il2CppSystem.Type systemTypeInstance, ref Object __result)
-        {
-            if (!TextureReplacementPlugin.EnableResourcePatches)
-                return true;
-
-            if (systemTypeInstance != Il2CppType.Of<Texture2D>()) return true;
-
-            string normName = TextureNameUtil.Normalize(path);
-
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                __result = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[RESOURCES] Replaced {normName}");
-                return false;
-            }
-
-            return true;
-        }
-    }
-
-    // =========================================================
-    // Material.SetTexture Patches
-    // =========================================================
-    [HarmonyPatch]
-    internal static class MaterialPatches
-    {
-        [HarmonyPatch(typeof(Material), nameof(Material.SetTexture), new[] { typeof(string), typeof(Texture) })]
-        [HarmonyPrefix]
-        private static void SetTexturePrefix(Material __instance, string name, ref Texture value)
-        {
-            if (!TextureReplacementPlugin.EnableMaterialPatches) return;
-            if (value == null) return;
-            string normName = TextureNameUtil.Normalize(value.name);
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                value = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (slot: {name})");
-            }
-        }
-
-        [HarmonyPatch(typeof(Material), nameof(Material.SetTexture), new[] { typeof(int), typeof(Texture) })]
-        [HarmonyPrefix]
-        private static void SetTextureByIDPrefix(Material __instance, int nameID, ref Texture value)
-        {
-            if (!TextureReplacementPlugin.EnableMaterialPatches) return;
-            if (value == null) return;
-            string normName = TextureNameUtil.Normalize(value.name);
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                value = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.SET] Replaced {normName} in {__instance.name} (propertyID: {nameID})");
-            }
-        }
-
-        [HarmonyPatch(typeof(Material), nameof(Material.mainTexture), MethodType.Setter)]
-        [HarmonyPrefix]
-        private static void MainTextureSetterPrefix(Material __instance, ref Texture value)
-        {
-            if (!TextureReplacementPlugin.EnableMaterialPatches) return;
-            if (value == null) return;
-            string normName = TextureNameUtil.Normalize(value.name);
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                value = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[MATERIAL.MAINTEX] Replaced {normName} in {__instance.name}");
-            }
-        }
-    }
-
-    // =========================================================
-    // MaterialPropertyBlock Patches (catches per-renderer overrides)
-    // =========================================================
-    [HarmonyPatch]
-    internal static class MaterialPropertyBlockPatches
-    {
-        [HarmonyPatch(typeof(MaterialPropertyBlock), nameof(MaterialPropertyBlock.SetTexture), new[] { typeof(string), typeof(Texture) })]
-        [HarmonyPrefix]
-        private static void SetTexturePrefix(string name, ref Texture value)
-        {
-            if (!TextureReplacementPlugin.EnableMaterialPropertyBlockPatches) return;
-            if (value == null) return;
-            string normName = TextureNameUtil.Normalize(value.name);
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                value = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (slot: {name})");
-            }
-        }
-
-        [HarmonyPatch(typeof(MaterialPropertyBlock), nameof(MaterialPropertyBlock.SetTexture), new[] { typeof(int), typeof(Texture) })]
-        [HarmonyPrefix]
-        private static void SetTextureByIDPrefix(int nameID, ref Texture value)
-        {
-            if (!TextureReplacementPlugin.EnableMaterialPropertyBlockPatches) return;
-            if (value == null) return;
-            string normName = TextureNameUtil.Normalize(value.name);
-            if (TextureRegistry.TryGet(normName, out var replacement))
-            {
-                value = replacement;
-                if (TextureReplacementPlugin.LoggingEnabled)
-                    TextureReplacementPlugin.Log.LogInfo($"[MPB.SET] Replaced {normName} (propertyID: {nameID})");
-            }
-        }
-    }
-
-    // =========================================================
-    // FadeManager Patches
-    // =========================================================
-    [HarmonyPatch]
-    internal static class FadePatches
+    internal static class GetAssetPatches
     {
         [HarmonyPostfix]
-        [HarmonyPatch(typeof(BokuMono.FadeManager), "FadeOutAsync")]
-        private static void FadeOutAsyncPostfix()
+        [HarmonyPatch(typeof(AssetBundleRequest), "get_asset")]
+        private static void GetAssetPostfix(ref Object __result)
         {
-            if (!TextureReplacementPlugin.EnableFadePatches) return;
+            if (__result == null) return;
 
-            if (TextureReplacementPlugin.LoggingEnabled)
-                TextureReplacementPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
-            var scanner = Object.FindObjectOfType<TextureScanner>();
-            if (scanner != null)
-                scanner.StartCoroutine(scanner.DelayedSwap(0.1f));
-        }
-
-        [HarmonyPostfix]
-        [HarmonyPatch(typeof(BokuMono.FadeManager), "FadeOut")]
-        private static void FadeOutPostfix()
-        {
-            if (!TextureReplacementPlugin.EnableFadePatches) return;
-
-            if (TextureReplacementPlugin.LoggingEnabled)
-                TextureReplacementPlugin.Log.LogInfo("[FADE] FadeOut detected. Triggering texture refresh...");
-            var scanner = Object.FindObjectOfType<TextureScanner>();
-            if (scanner != null)
-                scanner.StartCoroutine(scanner.DelayedSwap(0.1f));
-        }
-    }
-
-    // =========================================================
-    // ResourceManager Patches
-    // =========================================================
-    [HarmonyPatch(typeof(BokuMono.ResourceManager), "LoadPrefab", new[] { typeof(string), typeof(Il2CppSystem.Action<GameObject>) })]
-    internal static class ResourceManagerPatches
-    {
-        [HarmonyPrefix]
-        private static void LoadPrefabPrefix(string __0, ref Il2CppSystem.Action<GameObject> __1)
-        {
-            if (!TextureReplacementPlugin.EnableResourceManagerPatches) return;
-            if (string.IsNullOrEmpty(__0) || __1 == null) return;
-
-            var originalCallback = __1;
-
-            Action<GameObject> wrapper = (GameObject prefab) =>
+            // Direct Texture2D load
+            var tex = __result.TryCast<Texture2D>();
+            if (tex != null)
             {
-                if (prefab != null)
-                    ProcessPrefabTextures(prefab);
-                originalCallback.Invoke(prefab);
-            };
+                string normName = TextureNameUtil.Normalize(tex.name);
 
-            __1 = wrapper;
-        }
+                if (TextureReplacementPlugin.IsDiagnostic)
+                    TextureReplacementPlugin.Log.LogInfo(
+                        $"[GET_ASSET] Intercepted texture '{normName}'");
 
-        private static void ProcessPrefabTextures(GameObject prefab)
-        {
-            var renderers = prefab.GetComponentsInChildren<Renderer>(true);
-            foreach (var renderer in renderers)
-            {
-                var mats = renderer.sharedMaterials;
-                foreach (var mat in mats)
+                if (TextureRegistry.TryGet(normName, out var replacement))
                 {
-                    if (mat == null) continue;
-
-                    string[] slots = { "_MainTex", "_BaseMap", "_BaseColorMap", "_Albedo", "_DiffuseTexture", "_Texture", "_SkinTex" };
-                    foreach (var slot in slots)
-                    {
-                        if (!mat.HasProperty(slot)) continue;
-
-                        var tex = mat.GetTexture(slot);
-                        if (tex == null) continue;
-
-                        string normName = TextureNameUtil.Normalize(tex.name);
-
-                        if (TextureRegistry.TryGet(normName, out var replacement))
-                        {
-                            mat.SetTexture(slot, replacement);
-                            if (TextureReplacementPlugin.LoggingEnabled)
-                                TextureReplacementPlugin.Log.LogInfo($"[PREFAB] Injected {normName} into {prefab.name} (slot: {slot})");
-                        }
-                    }
+                    __result = replacement;
+                    if (TextureReplacementPlugin.IsNormal)
+                        TextureReplacementPlugin.Log.LogInfo(
+                            $"[GET_ASSET] Replaced '{normName}'");
                 }
+                return;
+            }
+
+            // GameObject load — scan children for embedded textures
+            var go = __result.TryCast<GameObject>();
+            if (go != null)
+            {
+                if (TextureReplacementPlugin.IsDiagnostic)
+                    TextureReplacementPlugin.Log.LogInfo(
+                        $"[GET_ASSET] Intercepted GameObject '{go.name}' — scanning children");
+
+                int count = MaterialTextureUtils.ScanAndReplace(go, "[GET_ASSET]");
+                if (count > 0 && TextureReplacementPlugin.IsNormal)
+                    TextureReplacementPlugin.Log.LogInfo(
+                        $"[GET_ASSET] Replaced {count} texture(s) in '{go.name}'");
             }
         }
     }
 }
 
-// CS0656 Fix
+// Stub attributes required to avoid CS0656 on nullable reference type annotations
+// emitted by the compiler. These are no-ops at runtime.
 namespace System.Runtime.CompilerServices
 {
     [AttributeUsage(AttributeTargets.All)]
