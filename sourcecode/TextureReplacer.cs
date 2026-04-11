@@ -238,6 +238,9 @@ namespace TextureReplacer
             _replacements[name] = tex;
         }
 
+        public static bool Contains(string name) =>
+            _replacements.ContainsKey(name);
+
         public static bool TryGet(string name, out Texture2D tex)
         {
             bool found = _replacements.TryGetValue(name, out tex);
@@ -277,28 +280,60 @@ namespace TextureReplacer
                 return;
             }
 
-            var pngFiles = Directory.GetFiles(folder, "*.png");
-            TextureReplacementPlugin.Log.LogInfo(
-                $"[LOADER] Found {pngFiles.Length} PNG(s) in {folder}");
+            // Collect top-level PNGs first so they take priority over subfolders,
+            // then append any PNGs found inside subdirectories.
+            var topLevelFiles  = Directory.GetFiles(folder, "*.png",
+                                     SearchOption.TopDirectoryOnly);
+            var subFolderFiles = Directory.GetFiles(folder, "*.png",
+                                     SearchOption.AllDirectories);
 
-            if (pngFiles.Length == 0)
+            // Build a depth-ordered, deduplicated file list.
+            // Top-level entries come first; subfolder entries are appended only
+            // if their path wasn't already covered by the top-level scan.
+            var topLevelSet   = new System.Collections.Generic.HashSet<string>(topLevelFiles);
+            var orderedFiles  = new System.Collections.Generic.List<string>(topLevelFiles);
+            foreach (string f in subFolderFiles)
+                if (!topLevelSet.Contains(f))
+                    orderedFiles.Add(f);
+
+            int totalCount = orderedFiles.Count;
+            TextureReplacementPlugin.Log.LogInfo(
+                $"[LOADER] Found {totalCount} PNG(s) under {folder} " +
+                $"({topLevelFiles.Length} top-level, " +
+                $"{totalCount - topLevelFiles.Length} in subfolders)");
+
+            if (totalCount == 0)
             {
                 TextureReplacementPlugin.Log.LogWarning(
                     "[LOADER] No PNGs found — nothing will be replaced.");
                 return;
             }
 
-            foreach (string file in pngFiles)
+            foreach (string file in orderedFiles)
             {
                 try
                 {
                     string assetName = Path.GetFileNameWithoutExtension(file);
+
+                    // Deduplication guard: the first file registered for a given
+                    // asset name wins (top-level beats subfolders; among subfolders,
+                    // the first one in directory-enumeration order wins).
+                    if (TextureRegistry.Contains(assetName))
+                    {
+                        TextureReplacementPlugin.Log.LogWarning(
+                            $"[LOADER] Duplicate skipped: '{assetName}' " +
+                            $"('{file}' — already registered from an earlier path).");
+                        continue;
+                    }
+
                     Texture2D tex = LoadWithImageSharp(file, assetName);
                     if (tex != null)
                     {
                         TextureRegistry.Register(assetName, tex);
-                        TextureReplacementPlugin.Log.LogInfo(
-                            $"[LOADER] Registered '{assetName}' ({tex.width}x{tex.height})");
+                        if (TextureReplacementPlugin.IsNormal)
+                            TextureReplacementPlugin.Log.LogInfo(
+                                $"[LOADER] Registered '{assetName}' ({tex.width}x{tex.height}) " +
+                                $"from '{Path.GetRelativePath(folder, file)}'");
                     }
                     else
                     {
