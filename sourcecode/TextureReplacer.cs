@@ -10,6 +10,7 @@ using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 using Object = UnityEngine.Object;
 
 // ImageSharp namespaces
@@ -55,8 +56,9 @@ namespace TextureReplacer
         public static PluginLogLevel LogLevel { get; private set; }
 
         // Convenience helpers used throughout the plugin
-        internal static bool IsNormal     => LogLevel >= PluginLogLevel.Normal;
-        internal static bool IsDiagnostic => LogLevel >= PluginLogLevel.Diagnostic;
+        internal static bool IsNormal             => LogLevel >= PluginLogLevel.Normal;
+        internal static bool IsDiagnostic         => LogLevel >= PluginLogLevel.Diagnostic;
+        internal static bool SpriteReplacementEnabled { get; private set; }
 
         public override void Load()
         {
@@ -83,6 +85,17 @@ namespace TextureReplacer
                 "Useful if a texture loads after the initial scene load and isn't caught by get_asset.\n" +
                 "Default: false"
             );
+
+            var cfgSprite = Config.Bind(
+                "General",
+                "EnableSpriteReplacement",
+                false,
+                "Enable replacement of Sprite assets and UI.Image components.\n" +
+                "Only standalone sprites (whose texture rect covers the full texture) are\n" +
+                "replaced safely. Atlas-packed sprites are skipped automatically.\n" +
+                "Default: false"
+            );
+            SpriteReplacementEnabled = cfgSprite.Value;
 
             // Initialize Harmony and apply patches
             Harmony = new Harmony("TextureReplacer");
@@ -161,6 +174,18 @@ namespace TextureReplacer
                 }
             }
 
+            // UI.Image sprite sweep
+            if (TextureReplacementPlugin.SpriteReplacementEnabled)
+            {
+                var allImages = GameObject.FindObjectsOfType<UnityEngine.UI.Image>(true);
+                foreach (var img in allImages)
+                {
+                    if (img == null) continue;
+                    int imgSwaps = SpriteUtils.ReplaceImageSprite(img, "[SCANNER]");
+                    swapCount += imgSwaps;
+                }
+            }
+
             if (TextureReplacementPlugin.IsNormal)
                 TextureReplacementPlugin.Log.LogInfo(
                     swapCount > 0
@@ -219,6 +244,92 @@ namespace TextureReplacer
                 }
             }
 
+            return count;
+        }
+    }
+
+    // =========================================================
+    // Sprite utilities
+    // =========================================================
+
+    internal static class SpriteUtils
+    {
+        /// <summary>
+        /// Attempts to rebuild <paramref name="original"/> using a registered
+        /// replacement texture. Returns null if:
+        ///   - sprite replacement is disabled in config
+        ///   - no replacement texture is registered for this sprite
+        ///   - the sprite is atlas-packed (rect does not cover the full texture)
+        /// </summary>
+        public static Sprite RebuildSprite(Sprite original, string logPrefix)
+        {
+            if (!TextureReplacementPlugin.SpriteReplacementEnabled) return null;
+            if (original == null)                                   return null;
+
+            if (original.texture == null)                                   return null;
+            string normName = TextureNameUtil.Normalize(original.texture.name);
+            if (string.IsNullOrEmpty(normName))                             return null;
+            if (!TextureRegistry.TryGet(normName, out var replacement))     return null;
+
+            // Atlas-safety guard: skip sprites that cover only a sub-region
+            // of their texture, as replacing the texture would break UV mapping
+            // for every other sprite sharing that atlas.
+            var rect = original.rect;
+            if (rect.width  != original.texture.width ||
+                rect.height != original.texture.height)
+            {
+                TextureReplacementPlugin.Log.LogWarning(
+                    $"{logPrefix} Skipped atlas-packed sprite '{original.name}' " +
+                    $"(rect {rect.width}x{rect.height} != " +
+                    $"texture {original.texture.width}x{original.texture.height}). " +
+                    "Supply a full replacement atlas to replace this sprite.");
+                return null;
+            }
+
+            var newSprite = Sprite.Create(
+                replacement,
+                new Rect(0f, 0f, replacement.width, replacement.height),
+                new Vector2(original.pivot.x / original.rect.width,
+                            original.pivot.y / original.rect.height),
+                original.pixelsPerUnit,
+                0,
+                SpriteMeshType.FullRect,
+                original.border
+            );
+            newSprite.name      = original.name;
+            newSprite.hideFlags = HideFlags.HideAndDontSave;
+
+            if (TextureReplacementPlugin.IsNormal)
+                TextureReplacementPlugin.Log.LogInfo(
+                    $"{logPrefix} Rebuilt sprite '{original.name}' " +
+                    $"with replacement texture '{normName}'");
+
+            return newSprite;
+        }
+
+        /// <summary>
+        /// Scans a single UI.Image and replaces its sprite if a registered
+        /// texture matches. Returns 1 if a replacement was made, 0 otherwise.
+        /// </summary>
+        public static int ReplaceImageSprite(UnityEngine.UI.Image img, string logPrefix)
+        {
+            if (img?.sprite == null) return 0;
+            var rebuilt = RebuildSprite(img.sprite, logPrefix);
+            if (rebuilt == null) return 0;
+            img.sprite = rebuilt;
+            return 1;
+        }
+
+        /// <summary>
+        /// Walks all UI.Image components on <paramref name="go"/> and its children,
+        /// replacing sprites whose backing texture is registered.
+        /// Returns the number of replacements made.
+        /// </summary>
+        public static int ScanAndReplaceImages(GameObject go, string logPrefix)
+        {
+            int count = 0;
+            foreach (var img in go.GetComponentsInChildren<UnityEngine.UI.Image>(true))
+                count += ReplaceImageSprite(img, logPrefix);
             return count;
         }
     }
@@ -422,7 +533,24 @@ namespace TextureReplacer
                 return;
             }
 
-            // GameObject load — scan children for embedded textures
+            // Sprite load
+            if (TextureReplacementPlugin.SpriteReplacementEnabled)
+            {
+                var sprite = __result.TryCast<Sprite>();
+                if (sprite != null)
+                {
+                    if (TextureReplacementPlugin.IsDiagnostic)
+                        TextureReplacementPlugin.Log.LogInfo(
+                            $"[GET_ASSET] Intercepted sprite '{sprite.name}'");
+
+                    var rebuilt = SpriteUtils.RebuildSprite(sprite, "[GET_ASSET]");
+                    if (rebuilt != null)
+                        __result = rebuilt;
+                    return;
+                }
+            }
+
+            // GameObject load — scan children for embedded textures and UI.Images
             var go = __result.TryCast<GameObject>();
             if (go != null)
             {
@@ -434,6 +562,14 @@ namespace TextureReplacer
                 if (count > 0 && TextureReplacementPlugin.IsNormal)
                     TextureReplacementPlugin.Log.LogInfo(
                         $"[GET_ASSET] Replaced {count} texture(s) in '{go.name}'");
+
+                if (TextureReplacementPlugin.SpriteReplacementEnabled)
+                {
+                    int spriteCount = SpriteUtils.ScanAndReplaceImages(go, "[GET_ASSET]");
+                    if (spriteCount > 0 && TextureReplacementPlugin.IsNormal)
+                        TextureReplacementPlugin.Log.LogInfo(
+                            $"[GET_ASSET] Replaced {spriteCount} sprite(s) in '{go.name}'");
+                }
             }
         }
     }
