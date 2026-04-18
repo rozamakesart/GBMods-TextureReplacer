@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
 using BepInEx;
 using BepInEx.Unity.IL2CPP;
 using BepInEx.Logging;
@@ -95,6 +96,7 @@ namespace TextureReplacer
                 "replaced safely. Atlas-packed sprites are skipped automatically.\n" +
                 "Default: false"
             );
+            
             SpriteReplacementEnabled = cfgSprite.Value;
 
             // Initialize Harmony and apply patches
@@ -265,26 +267,19 @@ namespace TextureReplacer
         {
             if (!TextureReplacementPlugin.SpriteReplacementEnabled) return null;
             if (original == null)                                   return null;
+            if (original.texture == null)                           return null;
 
-            if (original.texture == null)                                   return null;
             string normName = TextureNameUtil.Normalize(original.texture.name);
-            if (string.IsNullOrEmpty(normName))                             return null;
-            if (!TextureRegistry.TryGet(normName, out var replacement))     return null;
+            if (string.IsNullOrEmpty(normName)) return null;
 
-            // Atlas-safety guard: skip sprites that cover only a sub-region
-            // of their texture, as replacing the texture would break UV mapping
-            // for every other sprite sharing that atlas.
-            var rect = original.rect;
-            if (rect.width  != original.texture.width ||
-                rect.height != original.texture.height)
-            {
-                TextureReplacementPlugin.Log.LogWarning(
-                    $"{logPrefix} Skipped atlas-packed sprite '{original.name}' " +
-                    $"(rect {rect.width}x{rect.height} != " +
-                    $"texture {original.texture.width}x{original.texture.height}). " +
-                    "Supply a full replacement atlas to replace this sprite.");
-                return null;
-            }
+            var rect   = original.rect;
+            bool isAtlasPacked = rect.width  != original.texture.width
+                              || rect.height != original.texture.height;
+
+            if (isAtlasPacked) return null;
+
+            // ── Standalone sprite path (original behaviour) ───────────────────────────
+            if (!TextureRegistry.TryGet(normName, out var replacement)) return null;
 
             var newSprite = Sprite.Create(
                 replacement,
@@ -305,6 +300,25 @@ namespace TextureReplacer
                     $"with replacement texture '{normName}'");
 
             return newSprite;
+        }
+
+        /// <summary>
+        /// Scales a sprite rect from the coordinate space of <paramref name="src"/>
+        /// to the coordinate space of <paramref name="dst"/>. No-op when dimensions match.
+        /// </summary>
+        private static Rect ScaleRect(Rect rect, Texture2D src, Texture2D dst)
+        {
+            if (src.width == dst.width && src.height == dst.height) return rect;
+
+            float xScale = (float)dst.width  / src.width;
+            float yScale = (float)dst.height / src.height;
+
+            return new Rect(
+                rect.x      * xScale,
+                rect.y      * yScale,
+                rect.width  * xScale,
+                rect.height * yScale
+            );
         }
 
         /// <summary>
@@ -372,7 +386,7 @@ namespace TextureReplacer
                     $"  '{kvp.Key}' ({kvp.Value.width}x{kvp.Value.height})");
         }
     }
-
+    
     // =========================================================
     // Texture loader
     // =========================================================
@@ -393,10 +407,10 @@ namespace TextureReplacer
 
             // Collect top-level PNGs first so they take priority over subfolders,
             // then append any PNGs found inside subdirectories.
-            var topLevelFiles  = Directory.GetFiles(folder, "*.png",
-                                     SearchOption.TopDirectoryOnly);
-            var subFolderFiles = Directory.GetFiles(folder, "*.png",
-                                     SearchOption.AllDirectories);
+           
+
+            var topLevelFiles  = Directory.GetFiles(folder, "*.png", SearchOption.TopDirectoryOnly);
+            var subFolderFiles = Directory.GetFiles(folder, "*.png", SearchOption.AllDirectories);
 
             // Build a depth-ordered, deduplicated file list.
             // Top-level entries come first; subfolder entries are appended only
@@ -437,7 +451,7 @@ namespace TextureReplacer
                         continue;
                     }
 
-                    Texture2D tex = LoadWithImageSharp(file, assetName);
+                    Texture2D tex = TextureLoader.LoadTexture(file, assetName);
                     if (tex != null)
                     {
                         TextureRegistry.Register(assetName, tex);
@@ -462,8 +476,8 @@ namespace TextureReplacer
             if (TextureReplacementPlugin.IsNormal)
                 TextureRegistry.DumpAll();
         }
-
-        private static Texture2D LoadWithImageSharp(string path, string name)
+        // Was: private static Texture2D LoadWithImageSharp(string path, string name)
+        internal static Texture2D LoadTexture(string path, string name)
         {
             using var image = ISImage.Load<Rgba32>(path);
             image.Mutate(x => x.Flip(FlipMode.Vertical));
@@ -472,14 +486,15 @@ namespace TextureReplacer
             image.CopyPixelDataTo(pixelBytes);
 
             var tex = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false);
-            tex.name = name;
+            tex.name      = name;
             tex.hideFlags = HideFlags.HideAndDontSave;
             tex.LoadRawTextureData((Il2CppStructArray<byte>)pixelBytes);
             tex.Apply(true, true);
             return tex;
         }
-    }
 
+    }
+    
     // =========================================================
     // Utility
     // =========================================================
@@ -499,6 +514,8 @@ namespace TextureReplacer
             return name.Replace(" (Instance)", "");
         }
     }
+    
+    
 
     // =========================================================
     // get_asset patch — intercepts all completed AssetBundleRequests
@@ -508,7 +525,7 @@ namespace TextureReplacer
     internal static class GetAssetPatches
     {
         [HarmonyPostfix]
-        [HarmonyPatch(typeof(AssetBundleRequest), "get_asset")]
+        [HarmonyPatch(typeof(AssetBundleRequest), "GetResult")]
         private static void GetAssetPostfix(ref Object __result)
         {
             if (__result == null) return;
@@ -520,16 +537,17 @@ namespace TextureReplacer
                 string normName = TextureNameUtil.Normalize(tex.name);
 
                 if (TextureReplacementPlugin.IsDiagnostic)
-                    TextureReplacementPlugin.Log.LogInfo(
-                        $"[GET_ASSET] Intercepted texture '{normName}'");
+                    TextureReplacementPlugin.Log.LogInfo($"[GET_ASSET] Intercepted texture '{normName}'");
 
+                // Standalone texture replacement (existing)
                 if (TextureRegistry.TryGet(normName, out var replacement))
                 {
                     __result = replacement;
                     if (TextureReplacementPlugin.IsNormal)
-                        TextureReplacementPlugin.Log.LogInfo(
-                            $"[GET_ASSET] Replaced '{normName}'");
+                        TextureReplacementPlugin.Log.LogInfo($"[GET_ASSET] Replaced texture '{normName}'");
+                    return;
                 }
+
                 return;
             }
 
